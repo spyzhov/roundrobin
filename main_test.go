@@ -1,7 +1,10 @@
 package roundrobin
 
 import (
+	"context"
 	"testing"
+
+	"golang.org/x/sync/errgroup"
 )
 
 func TestRoundRobin_Next_sync(t *testing.T) {
@@ -19,8 +22,8 @@ func TestRoundRobin_Next_sync(t *testing.T) {
 			wantValues: output,
 		},
 		{
-			name:       "LinkedListNoSplit",
-			rr:         NewLinkedListNoSplit[int](array),
+			name:       "LinkedListRaw",
+			rr:         NewLinkedListRaw[int](array),
 			wantValues: output,
 		},
 		{
@@ -40,7 +43,43 @@ func TestRoundRobin_Next_sync(t *testing.T) {
 	}
 }
 
-func BenchmarkRoundRobin_Next(b *testing.B) {
+func TestRoundRobin_Next_async_race_check(t *testing.T) {
+	array := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	type testCase struct {
+		name string
+		rr   RoundRobin[int]
+	}
+	tests := []testCase{
+		{
+			name: "Chan",
+			rr:   NewChan[int](array),
+		},
+		{
+			name: "LinkedListRaw",
+			rr:   NewLinkedListRaw[int](array),
+		},
+		{
+			name: "NewLinkedListMutex",
+			rr:   NewLinkedListMutex[int](array),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g, _ := errgroup.WithContext(context.Background())
+			for i := 0; i < 100; i++ {
+				g.Go(func() error {
+					tt.rr.Next()
+					return nil
+				})
+			}
+			if err := g.Wait(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+func BenchmarkRoundRobin_Next_sync(b *testing.B) {
 	array := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
 	benchmarks := []struct {
 		name  string
@@ -52,8 +91,8 @@ func BenchmarkRoundRobin_Next(b *testing.B) {
 			rr:   NewChan[int](array),
 		},
 		{
-			name: "LL-NoSplit",
-			rr:   NewLinkedListNoSplit[int](array),
+			name: "LL-Raw",
+			rr:   NewLinkedListRaw[int](array),
 		},
 		{
 			name: "LL-Mutex",
@@ -65,6 +104,37 @@ func BenchmarkRoundRobin_Next(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				_ = bm.rr.Next()
 			}
+		})
+	}
+}
+
+func BenchmarkRoundRobin_Next_async(b *testing.B) {
+	array := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	benchmarks := []struct {
+		name  string
+		input []int
+		rr    RoundRobin[int]
+	}{
+		{
+			name: "Chan",
+			rr:   NewChan[int](array),
+		},
+		{
+			name: "LL-Raw",
+			rr:   NewLinkedListRaw[int](array),
+		},
+		{
+			name: "LL-Mutex",
+			rr:   NewLinkedListMutex[int](array),
+		},
+	}
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					_ = bm.rr.Next()
+				}
+			})
 		})
 	}
 }
